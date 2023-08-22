@@ -1,0 +1,192 @@
+echo "# AIO-Bundle-Kits" >> README.md
+git init
+git add README.md
+git commit -m "first commit"
+git branch -M main
+git remote add origin https://github.com/JesseSaurusRex/AIO-Bundle-Kits.git
+git push -u origin main
+with
+ q as (
+--reasonable nic volume and mininum scanning
+select
+	unique_loyalty_id ,
+	count(distinct sales_month) scannedmonth
+from
+	d_rpt_falcon_v.fact_rsd a
+join d_rpt_falcon_v.product_lookup b on
+	a.brand_style_sk = b.brand_style_sk
+join d_rpt_falcon_v.product_lineup_ttb_brand_style_lookup c on
+	a.brand_style_sk = c.brand_style_sk
+join d_rpt_falcon_v.calendar_sales_lookup d 
+on
+	a.sales_week_sk = d.sales_week_sk
+where
+	account_loyalty_id is not null
+	and account_loyalty_id_flag = 'Y'
+	and account_loyalty_id <> ''
+	and account_loyalty_id <> '0'
+	and account_loyalty_id not in (0, 00, 000, 0000, 00000, 00000)
+	--and (transaction_date < date_part(year, getdate()) or (transaction_date<date_part(month,getdate()) and transaction_date=date_part(year, getdate())))
+group by
+	1
+having
+	scannedmonth >= 20),
+--monthly volume set to less than 40 servings per day
+s as (
+select
+	unique_loyalty_id ,
+	sales_month,
+	sum(serving_quantity) monthlyservings
+from
+	d_rpt_falcon_v.fact_rsd a
+join d_rpt_falcon_v.calendar_sales_lookup b 
+on
+	a.sales_week_sk = b.sales_week_sk
+where
+	account_loyalty_id is not null
+	and account_loyalty_id_flag = 'Y'
+	and account_loyalty_id <> ''
+	and account_loyalty_id <> '0'
+	and account_loyalty_id not in (0, 00, 000, 0000, 00000, 00000)
+	group by
+		1,
+		2
+	having
+		isnull(monthlyservings,
+		0)<= 1200),
+--looking only at consumers who scanned product of interest--
+u as (
+select
+	unique_loyalty_id ,
+	min(transaction_date) targetproductdate, min(sales_month) targetproductmonth, min(sales_week_start_date) targetproductweek
+from
+	d_rpt_falcon_v.fact_rsd a
+join d_rpt_falcon_v.product_lineup_ttb_brand_style_lookup b
+on
+	a.brand_style_sk = b.brand_style_sk
+join d_rpt_falcon_v.account_lookup c 
+on
+	a.account_sk = c.account_sk
+	join d_rpt_falcon_v.calendar_sales_lookup d 
+	on a.sales_week_sk =d.sales_week_sk 
+where
+	product_lineup_sk = 83028
+	and a.brand_style_sk in (393884, 393885, 393886)
+	and transaction_date >= '2023-01-01'
+	and account_loyalty_id is not null
+	and account_loyalty_id <> ''
+	and account_loyalty_id <> '0'
+	and account_loyalty_id not in (0, 00, 000, 0000, 00000, 00000)
+		and account_loyalty_id_flag = 'Y'
+		group by
+			1
+),
+--prior vuse purchases
+r as (
+select
+	a.unique_loyalty_id , targetproductdate, l1_account_name,
+		sum(case when brand_family like '%VUSE%' and transaction_date <= dateadd(month, 2, targetproductdate) 
+and transaction_date > targetproductdate then cartridge_quantity else null end) cartridges2mo,
+sum(case when brand_family like '%VUSE%' 
+and transaction_date > targetproductdate then cartridge_quantity else null end) cartridgesafter,
+		count(distinct case when brand_family like '%VUSE%'
+and transaction_date<targetproductdate
+and transaction_date >= dateadd(month,
+-3,
+targetproductdate) then unique_basket_id else null end ) VuseL3mo,
+		count(distinct case when brand_family like '%VUSE%' and transaction_date<targetproductdate and transaction_date >= dateadd(month,-12, targetproductdate) then unique_basket_id else null end) VuseL12mo,
+		count(distinct case when b.product_category in ('VAPR', 'ACC') and transaction_date<targetproductdate
+and transaction_date >= dateadd(month,
+-12,
+targetproductdate) then unique_basket_id else null end ) VaporL12mo
+	from
+		d_rpt_falcon_v.fact_rsd a
+	join d_rpt_falcon_v.product_lookup b 
+on
+		a.brand_style_sk = b.brand_style_sk
+	join u on
+		a.unique_loyalty_id = u.unique_loyalty_id
+		join d_rpt_falcon_v.calendar_sales_lookup d 
+		on a.sales_week_sk =d.sales_week_sk 
+		join d_rpt_falcon_v.account_lookup e 
+		on a.account_sk =e.account_sk 
+	group by
+		1,
+		2
+		,3
+)
+,
+t as (
+select
+	r.unique_loyalty_id ,
+	r.targetproductdate, 
+case
+when a.brand_style_sk in (393884, 393885, 393886) then ' bundle kit'
+else null end  bundlescanner
+from
+	r join d_rpt_falcon_v.fact_rsd a
+	on r.unique_loyalty_id=a.unique_loyalty_id 
+join d_rpt_falcon_v.product_lineup_ttb_brand_style_lookup b
+on
+	a.brand_style_sk = b.brand_style_sk
+join d_rpt_falcon_v.account_lookup c 
+on
+	a.account_sk = c.account_sk
+	join d_rpt_falcon_v.calendar_sales_lookup d 
+	on a.sales_week_sk =d.sales_week_sk 
+where
+	product_lineup_sk = 83028
+	and transaction_date >= '2023-01-01'
+	and account_loyalty_id is not null
+	and account_loyalty_id <> ''
+	and account_loyalty_id <> '0'
+	and account_loyalty_id not in (0, 00, 000, 0000, 00000, 00000)
+		and account_loyalty_id_flag = 'Y'
+		and a.brand_style_sk in (393884, 393885, 393886)
+		group by
+			1,2,3
+)
+select
+	u.unique_loyalty_id,
+	targetproductmonth,
+	targetproductweek,
+	u.targetproductdate
+		,t.bundlescanner,
+		cartridgesafter,
+		l1_account_name
+	,case
+		when VuseL3mo >= 1 then 'Existing Vuse'
+		when VuseL12mo >= 1
+		and isnull(VuseL3mo,	0)= 0 then 'ReactivatedVuse'
+		when isnull(VuseL12mo,	0)= 0 then 'New Vuse'
+		else null
+	end PriorVuse,
+	case
+		when isnull(VaporL12mo,0)>= 1 then 'Existing Vapor'
+		else 'New Vapor'
+	end priorVapor,
+	case
+		when cartridges2mo >= 1 then 'repeat'
+		else 'no repeat'
+	end RepeatBuyer,
+	cartridges2mo, VuseL3mo, VuseL12mo
+from
+	u
+join q on
+	u.unique_loyalty_id = q.unique_loyalty_id
+left join r on
+	u.unique_loyalty_id = r.unique_loyalty_id
+join s on
+	u.unique_loyalty_id = s.unique_loyalty_id
+	join t on u.unique_loyalty_id=t.unique_loyalty_id 
+group by
+	1,
+	2,
+	3,
+	4,
+	5,
+	6,
+	7,
+	8,
+	9,
+	10,11,12,13
